@@ -28,6 +28,9 @@ except ImportError as exc:  # pragma: no cover - import guard
     raise
 
 
+DEFAULT_PAGES_PER_SHEET = 1
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Merge multiple PDF files into a single PDF in the given order."
@@ -50,8 +53,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pages-per-sheet",
         type=int,
-        default=1,
+        default=None,
         help="Number of original pages to place onto a single output page (default: 1).",
+    )
+    parser.add_argument(
+        "--nup-rows",
+        type=int,
+        help="Rows per sheet when using N-up layout (must be used with --nup-cols).",
+    )
+    parser.add_argument(
+        "--nup-cols",
+        type=int,
+        help="Columns per sheet when using N-up layout (must be used with --nup-rows).",
     )
     parser.add_argument(
         "--overwrite",
@@ -62,8 +75,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_paths(args: argparse.Namespace) -> tuple[list[Path], Path]:
-    ensure_pages_per_sheet(args.pages_per_sheet)
-
     output_path = Path(args.output).expanduser().resolve()
     if output_path.exists() and not args.overwrite:
         raise FileExistsError(
@@ -108,12 +119,6 @@ def validate_paths(args: argparse.Namespace) -> tuple[list[Path], Path]:
     return input_paths, output_path
 
 
-def ensure_pages_per_sheet(value: int) -> int:
-    if value < 1:
-        raise ValueError("`--pages-per-sheet` must be a positive integer.")
-    return value
-
-
 def load_page_refs(input_paths: list[Path]) -> tuple[list[tuple[PdfReader, int]], list[PdfReader]]:
     readers: list[PdfReader] = []
     page_refs: list[tuple[PdfReader, int]] = []
@@ -140,10 +145,14 @@ def get_page_size(page) -> tuple[float, float]:
     return float(mediabox.width), float(mediabox.height)
 
 
-def write_nup(page_refs: list[tuple[PdfReader, int]], output: Path, pages_per_sheet: int) -> None:
+def write_nup(
+    page_refs: list[tuple[PdfReader, int]],
+    output: Path,
+    pages_per_sheet: int,
+    rows: int,
+    cols: int,
+) -> None:
     writer = PdfWriter()
-    cols = math.ceil(math.sqrt(pages_per_sheet))
-    rows = math.ceil(pages_per_sheet / cols)
     for start in range(0, len(page_refs), pages_per_sheet):
         chunk_refs = page_refs[start : start + pages_per_sheet]
         chunk_pages = [reader.pages[index] for reader, index in chunk_refs]
@@ -180,17 +189,60 @@ def add_nup_page(
     writer.add_page(canvas)
 
 
+def resolve_nup_options(args: argparse.Namespace) -> tuple[int, int, int]:
+    """Determine pages per sheet plus grid rows/cols."""
+    pages_per_sheet = args.pages_per_sheet
+    nup_rows = args.nup_rows
+    nup_cols = args.nup_cols
+
+    if pages_per_sheet is None and (nup_rows is None and nup_cols is None):
+        pages_per_sheet = DEFAULT_PAGES_PER_SHEET
+
+    if nup_rows is None and nup_cols is None:
+        pages_per_sheet = ensure_positive_int(
+            pages_per_sheet, "--pages-per-sheet must be a positive integer."
+        )
+        cols = math.ceil(math.sqrt(pages_per_sheet))
+        rows = math.ceil(pages_per_sheet / cols)
+        return pages_per_sheet, rows, cols
+
+    if (nup_rows is None) != (nup_cols is None):
+        raise ValueError("`--nup-rows` and `--nup-cols` must be used together.")
+
+    rows = ensure_positive_int(nup_rows, "`--nup-rows` must be a positive integer.")
+    cols = ensure_positive_int(nup_cols, "`--nup-cols` must be a positive integer.")
+
+    if pages_per_sheet is None:
+        pages_per_sheet = rows * cols
+    else:
+        pages_per_sheet = ensure_positive_int(
+            pages_per_sheet, "--pages-per-sheet must be a positive integer."
+        )
+        if pages_per_sheet != rows * cols:
+            raise ValueError(
+                "`--pages-per-sheet` must equal rows * cols when specifying both."
+            )
+
+    return pages_per_sheet, rows, cols
+
+
+def ensure_positive_int(value: int | None, message: str) -> int:
+    if value is None or value < 1:
+        raise ValueError(message)
+    return value
+
+
 def main() -> int:
     args = parse_args()
     try:
         input_paths, output_path = validate_paths(args)
-        pages_per_sheet = ensure_pages_per_sheet(args.pages_per_sheet)
+        pages_per_sheet, rows, cols = resolve_nup_options(args)
         page_refs, readers = load_page_refs(input_paths)
         _ = readers  # Keep references alive until writing completes.
         if pages_per_sheet == 1:
             write_linear(page_refs, output_path)
         else:
-            write_nup(page_refs, output_path, pages_per_sheet)
+            write_nup(page_refs, output_path, pages_per_sheet, rows, cols)
     except Exception as exc:  # Print descriptive errors for the user
         print(f"Merge failed: {exc}", file=sys.stderr)
         return 1
