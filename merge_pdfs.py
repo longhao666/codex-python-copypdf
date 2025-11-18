@@ -168,7 +168,15 @@ def write_nup(
         oriented_width, oriented_height = orient_dimensions(
             base_width, base_height, orientation
         )
-        add_nup_page(writer, chunk_pages, oriented_width, oriented_height, rows, cols)
+        add_nup_page(
+            writer,
+            chunk_pages,
+            oriented_width,
+            oriented_height,
+            rows,
+            cols,
+            orientation,
+        )
     with output.open("wb") as fh:
         writer.write(fh)
 
@@ -180,6 +188,7 @@ def add_nup_page(
     page_height: float,
     rows: int,
     cols: int,
+    orientation: str,
 ) -> None:
     canvas = PageObject.create_blank_page(width=page_width, height=page_height)
     cell_width = page_width / cols
@@ -187,11 +196,16 @@ def add_nup_page(
     for idx, src in enumerate(chunk):
         src_width, src_height = get_page_size(src)
         scale = min(cell_width / src_width, cell_height / src_height)
-        row_from_top = idx // cols
-        col = idx % cols
+        if orientation == "portrait":
+            col = idx // rows
+            row_from_top = idx % rows
+        else:
+            row_from_top = idx // cols
+            col = idx % cols
         row_from_bottom = rows - 1 - row_from_top
         offset_x = col * cell_width + (cell_width - src_width * scale) / 2
-        offset_y = row_from_bottom * cell_height + (cell_height - src_height * scale) / 2
+        # 将页面顶部与单元格顶部对齐，避免出现额外的上边距
+        offset_y = row_from_bottom * cell_height + (cell_height - src_height * scale)
         ctm = (scale, 0, 0, scale, offset_x, offset_y)
         duplicated = PageObject.create_blank_page(width=src_width, height=src_height)
         duplicated.merge_page(src)
@@ -205,6 +219,7 @@ def resolve_nup_options(args: argparse.Namespace) -> tuple[int, int, int]:
     pages_per_sheet = args.pages_per_sheet
     nup_rows = args.nup_rows
     nup_cols = args.nup_cols
+    orientation = getattr(args, "orientation", DEFAULT_ORIENTATION)
 
     if pages_per_sheet is None and (nup_rows is None and nup_cols is None):
         pages_per_sheet = DEFAULT_PAGES_PER_SHEET
@@ -215,6 +230,12 @@ def resolve_nup_options(args: argparse.Namespace) -> tuple[int, int, int]:
         )
         cols = math.ceil(math.sqrt(pages_per_sheet))
         rows = math.ceil(pages_per_sheet / cols)
+        if (
+            orientation == "portrait"
+            and pages_per_sheet > 1
+            and rows < cols
+        ):
+            rows, cols = cols, rows
         return pages_per_sheet, rows, cols
 
     if (nup_rows is None) != (nup_cols is None):
