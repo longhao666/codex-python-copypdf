@@ -29,6 +29,7 @@ except ImportError as exc:  # pragma: no cover - import guard
 
 
 DEFAULT_PAGES_PER_SHEET = 1
+DEFAULT_ORIENTATION = "portrait"
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,6 +66,12 @@ def parse_args() -> argparse.Namespace:
         "--nup-cols",
         type=int,
         help="Columns per sheet when using N-up layout (must be used with --nup-rows).",
+    )
+    parser.add_argument(
+        "--orientation",
+        choices=("portrait", "landscape"),
+        default=DEFAULT_ORIENTATION,
+        help="Orientation to use for N-up pages (portrait default; only applies when pages-per-sheet > 1).",
     )
     parser.add_argument(
         "--overwrite",
@@ -151,13 +158,17 @@ def write_nup(
     pages_per_sheet: int,
     rows: int,
     cols: int,
+    orientation: str,
 ) -> None:
     writer = PdfWriter()
     for start in range(0, len(page_refs), pages_per_sheet):
         chunk_refs = page_refs[start : start + pages_per_sheet]
         chunk_pages = [reader.pages[index] for reader, index in chunk_refs]
         base_width, base_height = get_page_size(chunk_pages[0])
-        add_nup_page(writer, chunk_pages, base_width, base_height, rows, cols)
+        oriented_width, oriented_height = orient_dimensions(
+            base_width, base_height, orientation
+        )
+        add_nup_page(writer, chunk_pages, oriented_width, oriented_height, rows, cols)
     with output.open("wb") as fh:
         writer.write(fh)
 
@@ -232,6 +243,15 @@ def ensure_positive_int(value: int | None, message: str) -> int:
     return value
 
 
+def orient_dimensions(width: float, height: float, orientation: str) -> tuple[float, float]:
+    """Return page dimensions adjusted for the requested orientation."""
+    if orientation == "portrait":
+        return (min(width, height), max(width, height))
+    if orientation == "landscape":
+        return (max(width, height), min(width, height))
+    raise ValueError(f"Unsupported orientation: {orientation!r}")
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -242,7 +262,14 @@ def main() -> int:
         if pages_per_sheet == 1:
             write_linear(page_refs, output_path)
         else:
-            write_nup(page_refs, output_path, pages_per_sheet, rows, cols)
+            write_nup(
+                page_refs,
+                output_path,
+                pages_per_sheet,
+                rows,
+                cols,
+                args.orientation,
+            )
     except Exception as exc:  # Print descriptive errors for the user
         print(f"Merge failed: {exc}", file=sys.stderr)
         return 1
