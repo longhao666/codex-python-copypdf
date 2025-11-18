@@ -21,7 +21,8 @@ import sys
 from pathlib import Path
 
 try:
-from PyPDF2 import PdfReader, PdfWriter
+    from PyPDF2 import PdfReader, PdfWriter
+    from PyPDF2._page import PageObject
 except ImportError as exc:  # pragma: no cover - import guard
     print("Missing dependency PyPDF2. Run `pip install PyPDF2` first.", file=sys.stderr)
     raise
@@ -113,22 +114,23 @@ def ensure_pages_per_sheet(value: int) -> int:
     return value
 
 
-def load_pages(input_paths: list[Path]) -> tuple[list, list[PdfReader]]:
+def load_page_refs(input_paths: list[Path]) -> tuple[list[tuple[PdfReader, int]], list[PdfReader]]:
     readers: list[PdfReader] = []
-    pages: list = []
+    page_refs: list[tuple[PdfReader, int]] = []
     for path in input_paths:
         reader = PdfReader(str(path))
         readers.append(reader)
-        pages.extend(reader.pages)
-    if not pages:
+        for index in range(len(reader.pages)):
+            page_refs.append((reader, index))
+    if not page_refs:
         raise ValueError("No PDF pages found in the provided inputs.")
-    return pages, readers
+    return page_refs, readers
 
 
-def write_linear(pages: list, output: Path) -> None:
+def write_linear(page_refs: list[tuple[PdfReader, int]], output: Path) -> None:
     writer = PdfWriter()
-    for page in pages:
-        writer.add_page(page)
+    for reader, index in page_refs:
+        writer.add_page(reader.pages[index])
     with output.open("wb") as fh:
         writer.write(fh)
 
@@ -138,14 +140,15 @@ def get_page_size(page) -> tuple[float, float]:
     return float(mediabox.width), float(mediabox.height)
 
 
-def write_nup(pages: list, output: Path, pages_per_sheet: int) -> None:
+def write_nup(page_refs: list[tuple[PdfReader, int]], output: Path, pages_per_sheet: int) -> None:
     writer = PdfWriter()
     cols = math.ceil(math.sqrt(pages_per_sheet))
     rows = math.ceil(pages_per_sheet / cols)
-    for start in range(0, len(pages), pages_per_sheet):
-        chunk = pages[start : start + pages_per_sheet]
-        base_width, base_height = get_page_size(chunk[0])
-        add_nup_page(writer, chunk, base_width, base_height, rows, cols)
+    for start in range(0, len(page_refs), pages_per_sheet):
+        chunk_refs = page_refs[start : start + pages_per_sheet]
+        chunk_pages = [reader.pages[index] for reader, index in chunk_refs]
+        base_width, base_height = get_page_size(chunk_pages[0])
+        add_nup_page(writer, chunk_pages, base_width, base_height, rows, cols)
     with output.open("wb") as fh:
         writer.write(fh)
 
@@ -158,7 +161,7 @@ def add_nup_page(
     rows: int,
     cols: int,
 ) -> None:
-    canvas = writer.add_blank_page(width=page_width, height=page_height)
+    canvas = PageObject.create_blank_page(width=page_width, height=page_height)
     cell_width = page_width / cols
     cell_height = page_height / rows
     for idx, src in enumerate(chunk):
@@ -170,7 +173,11 @@ def add_nup_page(
         offset_x = col * cell_width + (cell_width - src_width * scale) / 2
         offset_y = row_from_bottom * cell_height + (cell_height - src_height * scale) / 2
         ctm = (scale, 0, 0, scale, offset_x, offset_y)
-        canvas.merge_transformed_page(src, ctm)
+        duplicated = PageObject.create_blank_page(width=src_width, height=src_height)
+        duplicated.merge_page(src)
+        duplicated.add_transformation(ctm)
+        canvas.merge_page(duplicated)
+    writer.add_page(canvas)
 
 
 def main() -> int:
@@ -178,12 +185,12 @@ def main() -> int:
     try:
         input_paths, output_path = validate_paths(args)
         pages_per_sheet = ensure_pages_per_sheet(args.pages_per_sheet)
-        pages, readers = load_pages(input_paths)
+        page_refs, readers = load_page_refs(input_paths)
         _ = readers  # Keep references alive until writing completes.
         if pages_per_sheet == 1:
-            write_linear(pages, output_path)
+            write_linear(page_refs, output_path)
         else:
-            write_nup(pages, output_path, pages_per_sheet)
+            write_nup(page_refs, output_path, pages_per_sheet)
     except Exception as exc:  # Print descriptive errors for the user
         print(f"Merge failed: {exc}", file=sys.stderr)
         return 1
