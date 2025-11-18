@@ -1,0 +1,6 @@
+PyPDF2>=3.0.1  python -m pip install PyPDF2
+
+ pip install pypdfium2
+
+
+
